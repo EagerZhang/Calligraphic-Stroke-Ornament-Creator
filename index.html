@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#f2f2f7" />
+  <title>Symmetric ornament canvas</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>Ornament canvas</h1>
+      <p class="hint">Drag shapes onto the canvas. The center line mirrors left and right.</p>
+    </header>
+
+    <aside class="palette" aria-label="Shape palette">
+      <h2>Shapes</h2>
+      <div class="palette-grid" id="palette-grid"></div>
+    </aside>
+
+    <div class="canvas-with-inspector">
+      <div class="canvas-panel">
+        <main class="canvas-wrap">
+          <svg id="canvas" class="canvas" viewBox="0 0 800 560" preserveAspectRatio="xMidYMid meet" role="application" aria-label="Drawing canvas with vertical mirror">
+            <defs>
+              <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="var(--grid-stroke)" stroke-width="0.5" opacity="0.35" />
+              </pattern>
+            </defs>
+            <rect class="canvas-bg" width="100%" height="100%" fill="url(#grid)" />
+            <line class="axis-y" x1="400" y1="0" x2="400" y2="560" />
+            <g id="layer-mirrors" class="layer mirrors" aria-hidden="true"></g>
+            <g id="layer-shapes" class="layer shapes"></g>
+          </svg>
+        </main>
+
+        <div class="canvas-controls-bar" role="toolbar" aria-label="Canvas tools">
+          <div class="controls-bar-inner">
+            <section class="control-module control-module--adjust" id="shape-inspector" aria-label="Shape size and rotation">
+              <div class="control-module-head">
+                <span class="control-module-title">Adjust shape</span>
+              </div>
+              <div class="adjust-slot">
+                <p class="control-hint" id="inspector-hint">Select a shape on the canvas.</p>
+                <div
+                  class="inspector-controls inspector-controls--passive"
+                  id="inspector-controls"
+                  aria-hidden="true"
+                  inert
+                >
+                  <div class="inspector-inline">
+                    <div class="inspector-field">
+                      <div class="inspector-field-head">
+                        <label for="prop-scale">Size</label>
+                        <span class="inspector-value" id="prop-scale-val">100%</span>
+                      </div>
+                      <input type="range" id="prop-scale" class="inspector-range" min="25" max="300" value="100" />
+                    </div>
+                    <div class="inspector-field">
+                      <div class="inspector-field-head">
+                        <label for="prop-rotation">Rotation</label>
+                        <span class="inspector-value" id="prop-rotation-val">0°</span>
+                      </div>
+                      <input type="range" id="prop-rotation" class="inspector-range" min="-180" max="180" value="0" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <span class="control-divider" aria-hidden="true"></span>
+
+            <div class="remove-shape-wrap" id="remove-shape-wrap" hidden>
+              <span class="control-divider remove-shape-wrap__divider" aria-hidden="true"></span>
+              <section class="control-module control-module--remove" aria-label="Selected shape">
+                <button type="button" id="remove-shape" class="btn-bar btn-bar--secondary">
+                  Remove shape
+                </button>
+              </section>
+            </div>
+
+            <section class="control-module control-module--color" aria-label="Shape color">
+              <span class="control-module-title control-module-title--inline">Shape color</span>
+              <input type="color" id="shape-color" class="shape-color-input" value="#000000" title="Applies to every shape on the canvas" aria-label="Shape color for all ornaments" />
+            </section>
+
+            <span class="control-divider" aria-hidden="true"></span>
+
+            <section class="control-module control-module--actions">
+              <button type="button" id="clear-canvas" class="btn-bar btn-bar--secondary">
+                Clear canvas
+              </button>
+              <button type="button" id="download-png" class="btn-bar btn-bar--primary">
+                Download picture
+              </button>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="shapes/shape-registry.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
