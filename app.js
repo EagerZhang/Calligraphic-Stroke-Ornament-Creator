@@ -37,6 +37,62 @@
     return window.ORNAMENT_SHAPES && window.ORNAMENT_SHAPES[kind];
   }
 
+  /** @type {Map<string, { cx: number, cy: number, w: number, h: number }>} */
+  const pathBBoxCache = new Map();
+
+  /**
+   * Bounding box of a path in its own d= coordinate space (centroid for anchoring).
+   */
+  function measurePathBBox(pathD) {
+    if (pathBBoxCache.has(pathD)) return pathBBoxCache.get(pathD);
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("width", "1600");
+    svg.setAttribute("height", "1600");
+    svg.style.cssText =
+      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;pointer-events:none";
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", pathD);
+    svg.appendChild(path);
+    document.body.appendChild(svg);
+    let cx = 0;
+    let cy = 0;
+    let w = 0;
+    let h = 0;
+    try {
+      const b = path.getBBox();
+      w = b.width;
+      h = b.height;
+      if (w > 1e-6 && h > 1e-6) {
+        cx = b.x + w / 2;
+        cy = b.y + h / 2;
+      }
+    } catch (e) {
+      /* ignore */
+    }
+    document.body.removeChild(svg);
+    const out = { cx, cy, w, h };
+    pathBBoxCache.set(pathD, out);
+    return out;
+  }
+
+  /**
+   * Scale so bbox height matches targetSize; anchor at bbox center.
+   * Falls back to viewBox center + sourceHeight if bbox is unusable.
+   */
+  function sourcePathLayout(pathD, targetSize, fallbackWidth, fallbackHeight) {
+    const m = measurePathBBox(pathD);
+    let cx = m.cx;
+    let cy = m.cy;
+    let denom = m.h;
+    if (!denom || denom < 1e-6) {
+      denom = fallbackHeight || 100;
+      cx = (fallbackWidth || 100) / 2;
+      cy = denom / 2;
+    }
+    const scale = targetSize / denom;
+    return { cx, cy, scale };
+  }
+
   function shapeDefinition(kind) {
     const g = document.createElementNS(SVG_NS, "g");
     const def = getShapeDef(kind);
@@ -48,10 +104,14 @@
     const c = def.canvas;
     if (c.kind === "sourcePath") {
       const inner = document.createElementNS(SVG_NS, "g");
-      const cx = c.sourceWidth / 2;
-      const cy = c.sourceHeight / 2;
-      const scale = c.targetSize / c.sourceHeight;
-      inner.setAttribute("transform", `translate(${-cx} ${-cy}) scale(${scale})`);
+      const { cx, cy, scale } = sourcePathLayout(
+        c.pathD,
+        c.targetSize,
+        c.sourceWidth,
+        c.sourceHeight
+      );
+      // SVG applies transforms right-to-left: translate first in path space, then scale → center at origin.
+      inner.setAttribute("transform", `scale(${scale}) translate(${-cx} ${-cy})`);
       const path = document.createElementNS(SVG_NS, "path");
       path.setAttribute("d", c.pathD);
       path.setAttribute("fill", c.fill != null ? c.fill : "currentColor");
@@ -85,11 +145,28 @@
       btn.title = entry.title || entry.label;
       btn.setAttribute("aria-label", entry.label);
       const svg = document.createElementNS(SVG_NS, "svg");
-      svg.setAttribute("viewBox", entry.palette.viewBox);
-      svg.setAttribute("width", "48");
-      svg.setAttribute("height", "48");
+      svg.setAttribute("viewBox", entry.palette.viewBox || "-26 -26 52 52");
+      svg.setAttribute("width", "72");
+      svg.setAttribute("height", "72");
       svg.setAttribute("aria-hidden", "true");
-      svg.innerHTML = entry.palette.innerHTML;
+      if (entry.canvas && entry.canvas.kind === "sourcePath") {
+        const iconTarget = 52;
+        const { cx, cy, scale } = sourcePathLayout(
+          entry.canvas.pathD,
+          iconTarget,
+          entry.canvas.sourceWidth,
+          entry.canvas.sourceHeight
+        );
+        const inner = document.createElementNS(SVG_NS, "g");
+        inner.setAttribute("transform", `scale(${scale}) translate(${-cx} ${-cy})`);
+        const path = document.createElementNS(SVG_NS, "path");
+        path.setAttribute("d", entry.canvas.pathD);
+        path.setAttribute("fill", "currentColor");
+        inner.appendChild(path);
+        svg.appendChild(inner);
+      } else {
+        svg.innerHTML = entry.palette.innerHTML;
+      }
       btn.appendChild(svg);
       grid.appendChild(btn);
     }
@@ -128,7 +205,7 @@
     if (removeShapeWrap) removeShapeWrap.hidden = false;
     if (propScale && propScaleVal) {
       const pct = Math.round(item.scale * 100);
-      propScale.value = String(clamp(pct, 25, 300));
+      propScale.value = String(clamp(pct, 25, 500));
       propScaleVal.textContent = `${pct}%`;
     }
     if (propRotation && propRotationVal) {
@@ -324,7 +401,7 @@
   function onInspectorInput() {
     const item = selectedId != null ? findItem(selectedId) : null;
     if (!item || !propScale || !propRotation) return;
-    item.scale = clamp(Number(propScale.value) / 100, 0.25, 3);
+    item.scale = clamp(Number(propScale.value) / 100, 0.25, 5);
     item.rotation = clamp(Number(propRotation.value), -180, 180);
     if (propScaleVal) propScaleVal.textContent = `${Math.round(item.scale * 100)}%`;
     if (propRotationVal) propRotationVal.textContent = `${Math.round(item.rotation)}°`;
@@ -414,47 +491,97 @@
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
   }
 
-  function downloadPng() {
-    const scale = 2;
-    const outW = VIEW_W * scale;
-    const outH = VIEW_H * scale;
+  /** Shapes + mirrors only (no grid, selection, or dimming) for export. */
+  function buildExportShapeTree() {
+    const root = document.createElementNS(SVG_NS, "g");
+    for (const item of items) {
+      const innerP = shapeDefinition(item.kind);
+      innerP.setAttribute("class", "shape-graphic");
+      const gp = document.createElementNS(SVG_NS, "g");
+      gp.appendChild(innerP);
+      setGroupTransform(gp, item.x, item.y, item.rotation, false, item.scale);
+      root.appendChild(gp);
+
+      const mx = mirrorX(item.x);
+      if (Math.abs(item.x - mx) > 0.5) {
+        const innerM = shapeDefinition(item.kind);
+        innerM.setAttribute("class", "shape-graphic");
+        const gm = document.createElementNS(SVG_NS, "g");
+        gm.appendChild(innerM);
+        setGroupTransform(gm, mx, item.y, item.rotation, true, item.scale);
+        root.appendChild(gm);
+      }
+    }
+    return root;
+  }
+
+  const EXPORT_PAD = 8;
+
+  /**
+   * @returns {{ minX: number, minY: number, vbW: number, vbH: number, shapeColor: string } | null}
+   */
+  function measureExportLayout() {
+    if (!items.length) return null;
     const rs = getComputedStyle(document.documentElement);
-    const surface = rs.getPropertyValue("--surface").trim() || "#ffffff";
-    const gridStroke = rs.getPropertyValue("--grid-stroke").trim() || "#d1d1d6";
-    const axisColor = rs.getPropertyValue("--axis").trim() || "rgba(0, 122, 255, 0.45)";
     const shapeColor =
       rs.getPropertyValue("--ornament-shape-color").trim() || "#000000";
-    // Export should ignore both hover dimming and mirror fading.
-    const mirrorOp = "1";
 
-    const svgEl = /** @type {SVGSVGElement} */ (canvas.cloneNode(true));
+    const rootMeasure = buildExportShapeTree();
+    const measureSvg = document.createElementNS(SVG_NS, "svg");
+    measureSvg.setAttribute("viewBox", `0 0 ${VIEW_W} ${VIEW_H}`);
+    measureSvg.setAttribute("width", String(VIEW_W));
+    measureSvg.setAttribute("height", String(VIEW_H));
+    measureSvg.style.cssText =
+      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;pointer-events:none;overflow:hidden";
+    const styleMeasure = document.createElementNS(SVG_NS, "style");
+    styleMeasure.textContent = `.shape-graphic { color: ${shapeColor}; }`;
+    measureSvg.appendChild(styleMeasure);
+    measureSvg.appendChild(rootMeasure);
+    document.body.appendChild(measureSvg);
+
+    let minX = 0;
+    let minY = 0;
+    let vbW = VIEW_W;
+    let vbH = VIEW_H;
+    try {
+      const bb = rootMeasure.getBBox();
+      if (bb.width > 0.5 && bb.height > 0.5) {
+        minX = bb.x - EXPORT_PAD;
+        minY = bb.y - EXPORT_PAD;
+        vbW = bb.width + EXPORT_PAD * 2;
+        vbH = bb.height + EXPORT_PAD * 2;
+      }
+    } catch (e) {
+      /* keep full canvas bounds */
+    }
+    document.body.removeChild(measureSvg);
+
+    return { minX, minY, vbW, vbH, shapeColor };
+  }
+
+  function buildExportSvgRoot(spec) {
+    const svgEl = document.createElementNS(SVG_NS, "svg");
     svgEl.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    svgEl.setAttribute("width", String(spec.vbW));
+    svgEl.setAttribute("height", String(spec.vbH));
+    svgEl.setAttribute("viewBox", `${spec.minX} ${spec.minY} ${spec.vbW} ${spec.vbH}`);
+    const styleEl = document.createElementNS(SVG_NS, "style");
+    styleEl.textContent = `.shape-graphic { color: ${spec.shapeColor}; }`;
+    svgEl.appendChild(styleEl);
+    svgEl.appendChild(buildExportShapeTree());
+    return svgEl;
+  }
+
+  function downloadPng() {
+    const spec = measureExportLayout();
+    if (!spec) return;
+
+    const scale = 2;
+    const svgEl = buildExportSvgRoot(spec);
+    const outW = Math.max(1, Math.ceil(spec.vbW * scale));
+    const outH = Math.max(1, Math.ceil(spec.vbH * scale));
     svgEl.setAttribute("width", String(outW));
     svgEl.setAttribute("height", String(outH));
-    svgEl
-      .querySelectorAll(".selection-outline, .selection-ring")
-      .forEach((el) => el.remove());
-
-    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    bg.setAttribute("width", "100%");
-    bg.setAttribute("height", "100%");
-    bg.setAttribute("fill", surface);
-    svgEl.insertBefore(bg, svgEl.firstChild);
-
-    const gridPath = svgEl.querySelector("#grid path");
-    if (gridPath) {
-      gridPath.setAttribute("stroke", gridStroke);
-    }
-
-    const styleEl = document.createElementNS("http://www.w3.org/2000/svg", "style");
-    styleEl.textContent = `
-      .axis-y { stroke: ${axisColor}; }
-      .layer.shapes .shape { color: ${shapeColor}; }
-      .layer.mirrors .shape-mirror { opacity: ${mirrorOp}; color: ${shapeColor}; }
-      .layer.shapes g.shape.shape--dimmed > .shape-graphic { opacity: 1; filter: none; }
-      .layer.mirrors .shape-mirror.shape-mirror--dimmed .shape-graphic { opacity: 1; filter: none; }
-    `;
-    svgEl.insertBefore(styleEl, svgEl.firstChild);
 
     const svgString = new XMLSerializer().serializeToString(svgEl);
     const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
@@ -468,8 +595,7 @@
       c.height = outH;
       const ctx = c.getContext("2d");
       if (!ctx) return;
-      ctx.fillStyle = surface;
-      ctx.fillRect(0, 0, outW, outH);
+      ctx.clearRect(0, 0, outW, outH);
       ctx.drawImage(img, 0, 0, outW, outH);
       c.toBlob((pngBlob) => {
         if (!pngBlob) return;
@@ -487,6 +613,22 @@
     };
 
     img.src = url;
+  }
+
+  function downloadSvg() {
+    const spec = measureExportLayout();
+    if (!spec) return;
+    const svgEl = buildExportSvgRoot(spec);
+    const svgString =
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      new XMLSerializer().serializeToString(svgEl);
+    const blob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = `ornament-${exportTimestamp()}.svg`;
+    a.click();
+    URL.revokeObjectURL(href);
   }
 
   function clearCanvas() {
@@ -526,9 +668,14 @@
     clearBtn.addEventListener("click", () => clearCanvas());
   }
 
-  const downloadBtn = document.getElementById("download-png");
-  if (downloadBtn) {
-    downloadBtn.addEventListener("click", () => downloadPng());
+  const downloadPngBtn = document.getElementById("download-png");
+  if (downloadPngBtn) {
+    downloadPngBtn.addEventListener("click", () => downloadPng());
+  }
+
+  const downloadSvgBtn = document.getElementById("download-svg");
+  if (downloadSvgBtn) {
+    downloadSvgBtn.addEventListener("click", () => downloadSvg());
   }
 
   const removeShapeBtn = document.getElementById("remove-shape");
